@@ -44,7 +44,9 @@ export default function OrderPage() {
         event: 'INSERT', schema: 'public', table: 'messages',
         filter: `room_id=eq.${room}`
       }, payload => {
-        setMessages(prev => [...prev, payload.new as Message])
+        const newMsg = payload.new as Message
+        // Only add if not already present (prevent duplicates from optimistic add)
+        setMessages(prev => prev.some(m => m.id === newMsg.id) ? prev : [...prev, newMsg])
       })
       .subscribe()
 
@@ -79,27 +81,50 @@ export default function OrderPage() {
     }
   }, [room])
 
-  // Load my orders for this room
+  // Load my orders for this room + active session
   useEffect(() => {
     if (!room) return
-    supabase.from('orders').select('*')
-      .eq('room_id', room)
-      .order('created_at', { ascending: false })
-      .limit(20)
-      .then(async (r) => {
-        const orders = r.data || []
+
+    const loadSessionOrders = async () => {
+      // Find active session for this room
+      const { data: sessions } = await supabase
+        .from('room_sessions')
+        .select('*')
+        .eq('room_id', room)
+        .eq('status', 'active')
+        .limit(1)
+
+      const activeSessionId = sessions?.[0]?.id || null
+
+      // Load orders: only for current session if exists, otherwise show nothing
+      if (activeSessionId) {
+        const { data: ordersData } = await supabase.from('orders').select('*')
+          .eq('room_id', room).eq('session_id', activeSessionId)
+          .order('created_at', { ascending: false }).limit(20)
+        const orders = ordersData || []
         setMyOrders(orders)
-        // Load order items for all orders
-        if (orders.length > 0) {
+
+        const nonCancelled = orders.filter(o => o.status !== 'cancelled')
+        if (nonCancelled.length > 0) {
           const { data: items } = await supabase
             .from('order_items')
             .select('*, menu_items(*)')
-            .in('order_id', orders.filter(o => o.status !== 'cancelled').map(o => o.id))
+            .in('order_id', nonCancelled.map(o => o.id))
           setOrderedItems(items || [])
+        } else {
+          setOrderedItems([])
         }
-      })
+      } else {
+        // No active session → clear everything
+        setMyOrders([])
+        setOrderedItems([])
+      }
+    }
 
-    const ch = supabase.channel(`orders-room-${room}`)
+    loadSessionOrders()
+
+    // Listen for order changes
+    const orderCh = supabase.channel(`orders-room-${room}`)
       .on('postgres_changes', {
         event: '*', schema: 'public', table: 'orders',
         filter: `room_id=eq.${room}`
@@ -109,7 +134,6 @@ export default function OrderPage() {
         }
         if (payload.eventType === 'INSERT') {
           setMyOrders(prev => [payload.new as Order, ...prev])
-          // Reload items after a short delay
           setTimeout(async () => {
             const { data: items } = await supabase
               .from('order_items')
@@ -121,7 +145,24 @@ export default function OrderPage() {
       })
       .subscribe()
 
-    return () => { supabase.removeChannel(ch) }
+    // Listen for session changes (open/close room) → reload orders + chat
+    const sessionCh = supabase.channel(`session-room-${room}`)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'room_sessions',
+        filter: `room_id=eq.${room}`
+      }, () => {
+        loadSessionOrders()
+        // Reload messages (admin clears chat on open/close)
+        supabase.from('messages').select('*').eq('room_id', room)
+          .order('created_at', { ascending: true })
+          .then(r => setMessages(r.data || []))
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(orderCh)
+      supabase.removeChannel(sessionCh)
+    }
   }, [room])
 
   // Auto scroll chat
@@ -167,8 +208,19 @@ export default function OrderPage() {
 
   const submitOrder = async () => {
     if (cart.items.length === 0) return
+
+    // Find active session for this room
+    const { data: sessions } = await supabase
+      .from('room_sessions')
+      .select('id')
+      .eq('room_id', room)
+      .eq('status', 'active')
+      .limit(1)
+
+    const sessionId = sessions?.[0]?.id || null
+
     const { data, error: orderError } = await supabase.from('orders')
-      .insert([{ room_id: room, status: 'pending' }]).select().single()
+      .insert([{ room_id: room, session_id: sessionId, status: 'pending' }]).select().single()
 
     if (orderError || !data) {
       console.error('Order insert error:', orderError)
@@ -176,30 +228,21 @@ export default function OrderPage() {
       return
     }
 
-    // Try with note column first
-    const itemsWithNote = cart.items.map(i => ({
+    const itemsData = cart.items.map(i => ({
       order_id: data.id,
       menu_item_id: i.id,
       quantity: i.quantity,
       note: i.note || null,
     }))
 
-    let { error: itemsError } = await supabase.from('order_items').insert(itemsWithNote)
+    const { error: itemsError } = await supabase.from('order_items').insert(itemsData)
 
-    // Fallback: if note column doesn't exist, insert without it
     if (itemsError) {
-      console.warn('Insert with note failed, trying without:', itemsError.message)
-      const itemsWithoutNote = cart.items.map(i => ({
-        order_id: data.id,
-        menu_item_id: i.id,
-        quantity: i.quantity,
+      // Fallback without note
+      const itemsNoNote = cart.items.map(i => ({
+        order_id: data.id, menu_item_id: i.id, quantity: i.quantity,
       }))
-      const { error: fallbackError } = await supabase.from('order_items').insert(itemsWithoutNote)
-      if (fallbackError) {
-        console.error('Order items insert error:', fallbackError)
-        showToast('⚠️ Đơn hàng đã tạo nhưng lỗi chi tiết!')
-        return
-      }
+      await supabase.from('order_items').insert(itemsNoNote)
     }
 
     setMyOrders(prev => [data, ...prev])
@@ -211,12 +254,15 @@ export default function OrderPage() {
   const sendMessage = async () => {
     if (!chatInput.trim() || !room) return
     broadcastStopTyping()
-    await supabase.from('messages').insert([{
-      room_id: room,
-      content: chatInput.trim(),
-      sender: 'customer',
-    }])
+    const msgContent = chatInput.trim()
     setChatInput('')
+    const { data } = await supabase.from('messages').insert([{
+      room_id: room,
+      content: msgContent,
+      sender: 'customer',
+    }]).select().single()
+    // Add directly (realtime handler will deduplicate by ID)
+    if (data) setMessages(prev => prev.some(m => m.id === data.id) ? prev : [...prev, data])
   }
 
   const formatPrice = (p: number) => p.toLocaleString('vi-VN') + 'đ'

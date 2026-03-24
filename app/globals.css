@@ -1354,3 +1354,88 @@ a:hover { color: var(--accent-hover); }
   font-size: 15px;
   color: var(--accent);
 }
+
+/* ---------- Revenue Room Card (Expandable) ---------- */
+.revenue-room-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+.revenue-room-card:hover {
+  border-color: var(--border-light);
+}
+
+.revenue-room-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+}
+.revenue-room-header:hover {
+  background: var(--bg-card-hover);
+}
+
+.revenue-room-details {
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.session-card {
+  background: var(--bg-surface);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+}
+
+.session-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.session-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  font-size: 13px;
+}
+.session-detail-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+}
+.session-detail-label {
+  color: var(--text-muted);
+}
+
+.session-orders {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.revenue-total-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 16px;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, var(--bg-card), var(--bg-surface));
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-md);
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--accent);
+}
+

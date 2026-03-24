@@ -13,6 +13,7 @@ export interface CartItem extends MenuItem {
 export interface Order {
   id: string;
   room_id: string;
+  session_id?: string | null;
   status: 'pending' | 'preparing' | 'done' | 'cancelled';
   created_at: string;
   order_items?: OrderItem[];
