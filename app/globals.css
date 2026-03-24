@@ -1439,3 +1439,46 @@ a:hover { color: var(--accent-hover); }
   color: var(--accent);
 }
 
+/* ---------- QR Code Grid ---------- */
+.qr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.qr-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  text-align: center;
+  transition: transform 0.2s, border-color 0.2s;
+}
+.qr-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+}
+
+.qr-card-label {
+  font-size: 18px;
+  font-weight: 800;
+  margin-bottom: 12px;
+  color: var(--accent);
+}
+
+.qr-card-code {
+  display: inline-block;
+  background: #fff;
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  margin-bottom: 10px;
+}
+
+.qr-card-url {
+  font-size: 10px;
+  color: var(--text-muted);
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+

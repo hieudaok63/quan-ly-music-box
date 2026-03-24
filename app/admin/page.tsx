@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { QRCodeSVG } from 'qrcode.react'
 import { supabase } from '../../lib/supabase'
 import { MenuItem, Order, OrderItem, Message, RoomPricing, RoomSession, DailyReport } from '../../lib/types'
 import { calculateCurrentCost, calculateRoomCost, formatDuration, DEFAULT_PRICING, parseSupabaseTimestamp } from '../../lib/roomUtils'
@@ -7,7 +8,8 @@ import { calculateCurrentCost, calculateRoomCost, formatDuration, DEFAULT_PRICIN
 const ROOMS = Array.from({ length: 10 }, (_, i) => String(i + 1))
 
 export default function AdminPage() {
-  const [activeTab, setActiveTab] = useState<'rooms' | 'orders' | 'menu' | 'chat' | 'revenue' | 'history'>('rooms')
+  const [activeTab, setActiveTab] = useState<'rooms' | 'orders' | 'menu' | 'chat' | 'revenue' | 'history' | 'qr'>('rooms')
+  const [baseUrl, setBaseUrl] = useState('')
 
   const [orders, setOrders] = useState<Order[]>([])
   const [orderItems, setOrderItems] = useState<Record<string, OrderItem[]>>({})
@@ -336,6 +338,7 @@ export default function AdminPage() {
           { key: 'revenue', label: '💰 Doanh thu' },
           { key: 'history', label: '📊 Lịch sử' },
           { key: 'chat', label: `💬 Chat${totalUnread > 0 ? ` (${totalUnread})` : ''}` },
+          { key: 'qr', label: '📱 QR Code' },
         ].map(t => (
           <button key={t.key} className={`tab ${activeTab === t.key ? 'active' : ''}`} onClick={() => setActiveTab(t.key as any)}>{t.label}</button>
         ))}
@@ -683,6 +686,59 @@ export default function AdminPage() {
                 onChange={e => handleChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()} />
               <button className="chat-send" onClick={sendMessage}>➤</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================== QR CODES ===================== */}
+      {activeTab === 'qr' && (
+        <div>
+          <h2 style={{ marginBottom: 8, fontSize: 20, fontWeight: 700 }}>📱 Mã QR cho từng phòng</h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>Khách quét QR → mở trang đặt món tương ứng với phòng</p>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 24 }}>
+            <label style={{ fontSize: 13, fontWeight: 600, flexShrink: 0 }}>🌐 Tên miền:</label>
+            <input
+              className="form-input"
+              style={{ maxWidth: 400 }}
+              placeholder="https://your-domain.com"
+              value={baseUrl}
+              onChange={e => setBaseUrl(e.target.value)}
+            />
+            <button className="btn btn-secondary btn-sm" onClick={() => setBaseUrl(typeof window !== 'undefined' ? window.location.origin : '')}>Tự phát hiện</button>
+          </div>
+          <div className="qr-grid">
+            {ROOMS.map(r => {
+              const url = `${baseUrl || (typeof window !== 'undefined' ? window.location.origin : '')}/order?room=${r}`
+              return (
+                <div key={r} className="qr-card">
+                  <div className="qr-card-label">Phòng {r}</div>
+                  <div className="qr-card-code">
+                    <QRCodeSVG
+                      value={url}
+                      size={180}
+                      bgColor="#ffffff"
+                      fgColor="#0a0a0f"
+                      level="M"
+                      includeMargin
+                    />
+                  </div>
+                  <div className="qr-card-url">{url}</div>
+                </div>
+              )
+            })}
+          </div>
+          <div style={{ textAlign: 'center', marginTop: 24 }}>
+            <button className="btn btn-primary" style={{ padding: '12px 40px', fontSize: 15 }} onClick={() => {
+              const printContent = ROOMS.map(r => {
+                const url = `${baseUrl || window.location.origin}/order?room=${r}`
+                return `<div style="display:inline-block;text-align:center;padding:20px;border:2px solid #000;border-radius:12px;margin:10px;page-break-inside:avoid"><h2 style="margin:0 0 10px;font-size:20px">🎵 Music Box</h2><h3 style="margin:0 0 15px;font-size:24px">Phòng ${r}</h3><img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(url)}" style="width:200px;height:200px" /><p style="margin:10px 0 0;font-size:10px;color:#666;word-break:break-all">${url}</p></div>`
+              }).join('')
+              const w = window.open('', '_blank')
+              if (w) {
+                w.document.write(`<html><head><title>QR Codes - Music Box</title><style>body{font-family:Arial;text-align:center;padding:20px}@media print{button{display:none!important}}</style></head><body><h1>🎵 Music Box - Mã QR</h1><div style="display:flex;flex-wrap:wrap;justify-content:center">${printContent}</div><br/><button onclick="window.print()" style="padding:12px 40px;font-size:16px;cursor:pointer">🖨️ In</button></body></html>`)
+                w.document.close()
+              }
+            }}>🖨️ In tất cả QR</button>
           </div>
         </div>
       )}
