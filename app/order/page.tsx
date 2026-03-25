@@ -15,6 +15,7 @@ export default function OrderPage() {
   const [toast, setToast] = useState('')
   const [room, setRoom] = useState<string | null>(null)
   const [adminTyping, setAdminTyping] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
 
   const cart = useCartStore()
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -145,14 +146,29 @@ export default function OrderPage() {
       })
       .subscribe()
 
-    // Listen for session changes (open/close room) → reload orders + chat
+    // Listen for session changes (open/close room / closeDay) → reload + reset
     const sessionCh = supabase.channel(`session-room-${room}`)
       .on('postgres_changes', {
         event: '*', schema: 'public', table: 'room_sessions',
         filter: `room_id=eq.${room}`
-      }, () => {
+      }, (payload) => {
+        if (payload.eventType === 'UPDATE' && (payload.new as any).status === 'closed') {
+          // Room was closed → clear cart, reload
+          cart.clearCart()
+          setShowCart(false)
+          showToast('🔒 Phòng đã đóng! Cảm ơn quý khách.')
+        }
+        if (payload.eventType === 'DELETE') {
+          // Session deleted (closeDay) → full reset
+          cart.clearCart()
+          setShowCart(false)
+          setMyOrders([])
+          setOrderedItems([])
+          setMessages([])
+          showToast('📊 Ngày mới đã bắt đầu!')
+        }
         loadSessionOrders()
-        // Reload messages (admin clears chat on open/close)
+        // Reload messages
         supabase.from('messages').select('*').eq('room_id', room)
           .order('created_at', { ascending: true })
           .then(r => setMessages(r.data || []))
@@ -354,13 +370,20 @@ export default function OrderPage() {
 
       {/* Menu */}
       <h2 style={{ marginBottom: 16, fontSize: 20, fontWeight: 700 }}>📋 Thực đơn</h2>
+      <div className="search-bar">
+        <input
+          placeholder="Tìm kiếm món..."
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+        />
+      </div>
       <div className="menu-grid">
-        {menu.map(item => {
+        {menu.filter(item => item.name.toLowerCase().includes(searchQuery.toLowerCase())).map(item => {
           const inCart = cart.items.find(c => c.id === item.id)
           return (
             <div key={item.id} className="menu-item">
               <img
-                src={item.image_url || 'https://placehold.co/80x80/1a1a2e/e8e8f0?text=🍽️'}
+                src={item.image_url || 'https://placehold.co/80x80/16162a/e8e8f0?text=🍽️'}
                 alt={item.name}
                 className="menu-item-img"
               />

@@ -162,6 +162,15 @@ export default function AdminPage() {
     const pricing = getRoomPricing(session.room_id)
     const totalAmount = calculateRoomCost(parseSupabaseTimestamp(session.check_in), new Date(), pricing)
 
+    // Auto-complete all pending/preparing orders for this session
+    const sessionOrders = orders.filter(o => o.session_id === session.id && (o.status === 'pending' || o.status === 'preparing'))
+    for (const order of sessionOrders) {
+      await supabase.from('orders').update({ status: 'done' }).eq('id', order.id)
+    }
+    if (sessionOrders.length > 0) {
+      setOrders(prev => prev.map(o => o.session_id === session.id && (o.status === 'pending' || o.status === 'preparing') ? { ...o, status: 'done' as const } : o))
+    }
+
     // Clear chat for this room
     await supabase.from('messages').delete().eq('room_id', session.room_id)
     setMessages(prev => prev.filter(m => m.room_id !== session.room_id))
@@ -217,7 +226,19 @@ export default function AdminPage() {
   const hasActiveRooms = roomSessions.some(s => s.status === 'active')
 
   // =============== CLOSE DAY ===============
+  const todayStr = new Date().toISOString().split('T')[0]
+  // Check if there's any new activity (sessions or orders) to close
+  const hasNewActivity = roomSessions.length > 0 || currentOrders.length > 0
+  const canCloseDay = hasNewActivity && !hasActiveRooms
+
   const closeDay = async () => {
+    if (!hasNewActivity) {
+      showToast('⚠️ Không có dữ liệu mới để chốt!')
+      setConfirmClose(false)
+      return
+    }
+
+    // Close all active rooms first
     for (const session of roomSessions.filter(s => s.status === 'active')) await checkOutRoom(session)
 
     const details = ROOMS.map(r => {
@@ -240,18 +261,46 @@ export default function AdminPage() {
     const finalRoomRev = details.reduce((s, d) => s + d.room_revenue, 0)
     const finalOrderRev = details.reduce((s, d) => s + d.order_revenue, 0)
 
+    // 1. Save daily report (History)
     const { data } = await supabase.from('daily_reports').insert([{
-      report_date: new Date().toISOString().split('T')[0],
+      report_date: todayStr,
       total_room_revenue: finalRoomRev, total_order_revenue: finalOrderRev,
       total_revenue: finalRoomRev + finalOrderRev, details,
     }]).select().single()
 
-    if (data) {
-      setDailyReports(prev => [data, ...prev])
-      setRoomSessions([])
-      showToast('✅ Đã chốt doanh thu! Bắt đầu ngày mới.')
-      setConfirmClose(false)
+    if (!data) {
+      showToast('❌ Lỗi khi lưu báo cáo!')
+      return
     }
+
+    // 2. Get all order IDs for today to delete order_items
+    const todayOrderIds = orders.filter(o => parseSupabaseTimestamp(o.created_at) >= getDayStart()).map(o => o.id)
+
+    // 3. Delete order_items → orders → sessions → messages (in dependency order)
+    if (todayOrderIds.length > 0) {
+      await supabase.from('order_items').delete().in('order_id', todayOrderIds)
+      await supabase.from('orders').delete().in('id', todayOrderIds)
+    }
+
+    // Delete today's closed sessions
+    const todaySessionIds = roomSessions.map(s => s.id)
+    if (todaySessionIds.length > 0) {
+      await supabase.from('room_sessions').delete().in('id', todaySessionIds)
+    }
+
+    // Delete all remaining messages
+    await supabase.from('messages').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+
+    // 4. Reset ALL state for new day
+    setDailyReports(prev => [data, ...prev])
+    setOrders([])
+    setOrderItems({})
+    setRoomSessions([])
+    setMessages([])
+    setUnreadRooms({})
+    setCustomerTyping({})
+    showToast('✅ Đã chốt doanh thu! Dữ liệu đã reset — bắt đầu ngày mới.')
+    setConfirmClose(false)
   }
 
   // =============== ORDER/CHAT/MENU ===============
@@ -344,6 +393,38 @@ export default function AdminPage() {
         ))}
       </div>
 
+      {/* Quick Stats */}
+      <div className="admin-stats">
+        <div className="admin-stat-card">
+          <div className="admin-stat-icon" style={{ background: 'rgba(0,214,143,0.12)' }}>🏠</div>
+          <div className="admin-stat-info">
+            <div className="admin-stat-label">Phòng đang mở</div>
+            <div className="admin-stat-value" style={{ color: 'var(--success)' }}>{roomSessions.filter(s => s.status === 'active').length}</div>
+          </div>
+        </div>
+        <div className="admin-stat-card">
+          <div className="admin-stat-icon" style={{ background: 'rgba(255,170,0,0.12)' }}>📋</div>
+          <div className="admin-stat-info">
+            <div className="admin-stat-label">Đơn chờ xử lý</div>
+            <div className="admin-stat-value" style={{ color: 'var(--warning)' }}>{currentOrders.filter(o => o.status === 'pending').length}</div>
+          </div>
+        </div>
+        <div className="admin-stat-card">
+          <div className="admin-stat-icon" style={{ background: 'rgba(233,69,96,0.12)' }}>💰</div>
+          <div className="admin-stat-info">
+            <div className="admin-stat-label">Doanh thu hôm nay</div>
+            <div className="admin-stat-value" style={{ color: 'var(--accent)' }}>{formatPrice(totalRevenue)}</div>
+          </div>
+        </div>
+        <div className="admin-stat-card">
+          <div className="admin-stat-icon" style={{ background: 'rgba(77,166,255,0.12)' }}>💬</div>
+          <div className="admin-stat-info">
+            <div className="admin-stat-label">Tin nhắn chưa đọc</div>
+            <div className="admin-stat-value" style={{ color: 'var(--info)' }}>{totalUnread}</div>
+          </div>
+        </div>
+      </div>
+
       {/* ===================== ROOMS ===================== */}
       {activeTab === 'rooms' && (
         <div>
@@ -353,11 +434,23 @@ export default function AdminPage() {
               const session = getActiveSession(r)
               const pricing = getRoomPricing(r)
               const orderCount = pendingByRoom(r)
+              const roomUnread = unreadRooms[r] || 0
+              const isTyping = customerTyping[r]
               return (
                 <div key={r} className={`room-card ${session ? 'has-orders' : ''}`}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                     <div className="room-card-number">P{r}</div>
-                    {orderCount > 0 && <div className="room-card-badge">{orderCount} đơn</div>}
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {roomUnread > 0 && (
+                        <div style={{ background: 'var(--info)', color: '#fff', borderRadius: 'var(--radius-full)', padding: '2px 8px', fontSize: 11, fontWeight: 700, animation: 'pulse 2s infinite', display: 'flex', alignItems: 'center', gap: 4 }}>
+                          💬 {roomUnread}
+                        </div>
+                      )}
+                      {isTyping && (
+                        <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success)', animation: 'pulse 1s infinite' }} title="Khách đang nhập..." />
+                      )}
+                      {orderCount > 0 && <div className="room-card-badge">{orderCount} đơn</div>}
+                    </div>
                   </div>
                   {session ? (
                     <>
@@ -575,7 +668,12 @@ export default function AdminPage() {
 
           {/* Close Day */}
           <div style={{ textAlign: 'center', marginTop: 32 }}>
-            {hasActiveRooms ? (
+            {!hasNewActivity ? (
+              <div>
+                <button className="btn-close-day" disabled style={{ opacity: 0.5, cursor: 'not-allowed', transform: 'none' }}>📊 Chốt doanh thu</button>
+                <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 12 }}>Chưa có hoạt động nào. Mở phòng để bắt đầu.</p>
+              </div>
+            ) : hasActiveRooms ? (
               <div>
                 <button className="btn-close-day" disabled style={{ opacity: 0.5, cursor: 'not-allowed', transform: 'none' }}>📊 Chốt doanh thu</button>
                 <p style={{ color: 'var(--warning)', fontSize: 13, marginTop: 12 }}>⚠️ Đóng tất cả phòng trước khi chốt ({roomSessions.filter(s => s.status === 'active').length} phòng đang mở)</p>
