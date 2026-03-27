@@ -6,8 +6,13 @@ import { MenuItem, Order, OrderItem, Message, RoomPricing, RoomSession, DailyRep
 import { calculateCurrentCost, calculateRoomCost, formatDuration, DEFAULT_PRICING, parseSupabaseTimestamp } from '../../lib/roomUtils'
 
 const ROOMS = Array.from({ length: 10 }, (_, i) => String(i + 1))
+const ADMIN_PASSWORD = 'musicbox2024'
 
 export default function AdminPage() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [password, setPassword] = useState('')
+  const [passwordError, setPasswordError] = useState('')
+
   const [activeTab, setActiveTab] = useState<'rooms' | 'orders' | 'menu' | 'chat' | 'revenue' | 'history' | 'qr'>('rooms')
   const [baseUrl, setBaseUrl] = useState('')
 
@@ -36,11 +41,40 @@ export default function AdminPage() {
   const [confirmClose, setConfirmClose] = useState(false)
   const [expandedRooms, setExpandedRooms] = useState<Record<string, boolean>>({})
 
+  // Invoice/checkout modal states
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false)
+  const [checkoutSession, setCheckoutSession] = useState<RoomSession | null>(null)
+  const [discountPercent, setDiscountPercent] = useState(0)
+  const [invoicePrinted, setInvoicePrinted] = useState<Record<string, boolean>>({})
+
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const typingTimeoutsRef = useRef<Record<string, NodeJS.Timeout>>({})
   const typingChannelsRef = useRef<Record<string, any>>({})
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 3000) }
+
+  // Check sessionStorage for existing auth
+  useEffect(() => {
+    if (typeof window !== 'undefined' && sessionStorage.getItem('admin_authenticated') === 'true') {
+      setIsAuthenticated(true)
+    }
+  }, [])
+
+  const handleLogin = () => {
+    if (password === ADMIN_PASSWORD) {
+      setIsAuthenticated(true)
+      setPasswordError('')
+      sessionStorage.setItem('admin_authenticated', 'true')
+    } else {
+      setPasswordError('Mật khẩu không đúng!')
+    }
+  }
+
+  const handleLogout = () => {
+    setIsAuthenticated(false)
+    setPassword('')
+    sessionStorage.removeItem('admin_authenticated')
+  }
 
   useEffect(() => {
     const interval = setInterval(() => setTimerTick(t => t + 1), 1000)
@@ -273,20 +307,20 @@ export default function AdminPage() {
       return
     }
 
-    // 2. Get all order IDs for today to delete order_items
-    const todayOrderIds = orders.filter(o => parseSupabaseTimestamp(o.created_at) >= getDayStart()).map(o => o.id)
+    // 2. Get ALL order IDs to delete order_items (including any leftover from previous days)
+    const allOrderIds = orders.map(o => o.id)
 
-    // 3. Delete order_items → orders → sessions → messages (in dependency order)
-    if (todayOrderIds.length > 0) {
-      await supabase.from('order_items').delete().in('order_id', todayOrderIds)
-      await supabase.from('orders').delete().in('id', todayOrderIds)
+    // 3. Delete ALL order_items → orders → sessions → messages (clean slate)
+    if (allOrderIds.length > 0) {
+      await supabase.from('order_items').delete().in('order_id', allOrderIds)
+      await supabase.from('orders').delete().in('id', allOrderIds)
     }
+    // Also delete any orphaned order_items/orders not in local state
+    await supabase.from('order_items').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+    await supabase.from('orders').delete().neq('id', '00000000-0000-0000-0000-000000000000')
 
-    // Delete today's closed sessions
-    const todaySessionIds = roomSessions.map(s => s.id)
-    if (todaySessionIds.length > 0) {
-      await supabase.from('room_sessions').delete().in('id', todaySessionIds)
-    }
+    // Delete all sessions (including any leftover from previous days)
+    await supabase.from('room_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000')
 
     // Delete all remaining messages
     await supabase.from('messages').delete().neq('id', '00000000-0000-0000-0000-000000000000')
@@ -370,16 +404,115 @@ export default function AdminPage() {
   const selectChatRoom = (roomId: string) => { setSelectedRoom(roomId); setUnreadRooms(prev => { const next = { ...prev }; delete next[roomId]; return next }) }
 
   // =============== RENDER ===============
+  // =============== LOGIN SCREEN ===============
+  if (!isAuthenticated) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'var(--bg-main)',
+        padding: 20,
+      }}>
+        <div style={{
+          background: 'var(--bg-card)',
+          borderRadius: 'var(--radius-lg, 16px)',
+          padding: '48px 36px',
+          width: '100%',
+          maxWidth: 400,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.08)',
+          border: '1px solid var(--border)',
+          textAlign: 'center',
+        }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>🎵</div>
+          <h1 style={{
+            fontSize: 26,
+            fontWeight: 800,
+            background: 'linear-gradient(135deg, var(--accent), var(--accent-gold))',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            marginBottom: 6,
+          }}>Music Box Admin</h1>
+          <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 32 }}>Nhập mật khẩu để tiếp tục</p>
+
+          <div style={{ textAlign: 'left' }}>
+            <label className="form-label" style={{ marginBottom: 6, display: 'block' }}>🔒 Mật khẩu</label>
+            <input
+              className="form-input"
+              type="password"
+              placeholder="Nhập mật khẩu admin..."
+              value={password}
+              onChange={e => { setPassword(e.target.value); setPasswordError('') }}
+              onKeyDown={e => e.key === 'Enter' && handleLogin()}
+              autoFocus
+              style={{ width: '100%', marginBottom: 8, fontSize: 15 }}
+            />
+            {passwordError && (
+              <div style={{
+                color: '#e94560',
+                fontSize: 13,
+                marginBottom: 8,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }}>
+                ⚠️ {passwordError}
+              </div>
+            )}
+          </div>
+
+          <button
+            className="btn btn-primary"
+            onClick={handleLogin}
+            style={{
+              width: '100%',
+              padding: '14px 24px',
+              fontSize: 16,
+              fontWeight: 700,
+              marginTop: 12,
+              borderRadius: 'var(--radius-md, 12px)',
+            }}
+          >
+            Đăng nhập
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="admin-container">
       {toast && <div className="toast">{toast}</div>}
 
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 800, background: 'linear-gradient(135deg, var(--accent), var(--accent-gold))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>🎵 Music Box Admin</h1>
-        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>Quản lý phòng, đơn hàng & doanh thu</p>
+      <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <h1 style={{ fontSize: 28, fontWeight: 800, background: 'linear-gradient(135deg, var(--accent), var(--accent-gold))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>🎵 Music Box Admin</h1>
+          <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>Quản lý phòng, đơn hàng & doanh thu</p>
+        </div>
+        <button
+          onClick={handleLogout}
+          style={{
+            background: 'transparent',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm, 8px)',
+            padding: '8px 16px',
+            fontSize: 13,
+            color: 'var(--text-secondary)',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            transition: 'all 0.2s',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)' }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-secondary)' }}
+        >
+          🚪 Đăng xuất
+        </button>
       </div>
 
-      <div className="admin-tabs" style={{ maxWidth: 700 }}>
+      <div className="admin-tabs" style={{ maxWidth: 900 }}>
         {[
           { key: 'rooms', label: '🏠 Phòng' },
           { key: 'orders', label: `📋 Đơn hàng${currentOrders.filter(o => o.status === 'pending').length > 0 ? ` (${currentOrders.filter(o => o.status === 'pending').length})` : ''}` },
@@ -457,7 +590,7 @@ export default function AdminPage() {
                       <div className="room-timer">{getLiveTimer(session)}</div>
                       <div className="room-cost-live">~{formatPrice(getLiveCost(session))}</div>
                       <div className="room-card-actions-row">
-                        <button className="btn btn-primary btn-sm" onClick={() => checkOutRoom(session)}>🔒 Đóng phòng</button>
+                        <button className="btn btn-primary btn-sm" onClick={() => { setCheckoutSession(session); setDiscountPercent(0); setShowInvoiceModal(true) }}>🔒 Đóng phòng</button>
                       </div>
                     </>
                   ) : (
@@ -633,6 +766,16 @@ export default function AdminPage() {
                                   <span>{formatPrice(orderRev)}</span>
                                 </div>
                               </div>
+                              {s.status === 'closed' && invoicePrinted[s.id] === false && (
+                                <div style={{ fontSize: 12, color: 'var(--warning)', marginTop: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                  ⚠️ Không in hoá đơn
+                                </div>
+                              )}
+                              {s.status === 'closed' && invoicePrinted[s.id] === true && (
+                                <div style={{ fontSize: 12, color: 'var(--success)', marginTop: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                  ✅ Đã in hoá đơn
+                                </div>
+                              )}
                               {/* Orders in this session */}
                               {sessionOrders.length > 0 && (
                                 <div className="session-orders">
@@ -840,6 +983,222 @@ export default function AdminPage() {
           </div>
         </div>
       )}
+
+      {/* ===================== INVOICE MODAL ===================== */}
+      {showInvoiceModal && checkoutSession && (() => {
+        const sess = checkoutSession
+        const pricing = getRoomPricing(sess.room_id)
+        const checkInTime = parseSupabaseTimestamp(sess.check_in)
+        const checkOutTime = new Date()
+        const roomCost = calculateRoomCost(checkInTime, checkOutTime, pricing)
+        const sessOrders = orders.filter(o => o.session_id === sess.id && o.status !== 'cancelled')
+        const foodItems: { name: string; qty: number; price: number; total: number }[] = []
+        sessOrders.forEach(o => {
+          (orderItems[o.id] || []).forEach((item: any) => {
+            foodItems.push({
+              name: item.menu_items?.name || '—',
+              qty: item.quantity,
+              price: item.menu_items?.price || 0,
+              total: (item.menu_items?.price || 0) * item.quantity,
+            })
+          })
+        })
+        const foodTotal = foodItems.reduce((s, i) => s + i.total, 0)
+        const subtotal = roomCost + foodTotal
+        const discountAmount = Math.round(subtotal * discountPercent / 100)
+        const finalTotal = subtotal - discountAmount
+        const durationMs = checkOutTime.getTime() - checkInTime.getTime()
+        const hours = Math.floor(durationMs / 3600000)
+        const minutes = Math.floor((durationMs % 3600000) / 60000)
+        const durationStr = hours > 0 ? `${hours} giờ ${minutes} phút` : `${minutes} phút`
+        const timeFormat = (d: Date) => d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+        const dateFormat = (d: Date) => d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' })
+
+        const printInvoice = () => {
+          const foodRowsHtml = foodItems.map(i =>
+            `<tr><td style="padding:6px 8px;border-bottom:1px solid #eee">${i.name}</td><td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center">${i.qty}</td><td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right">${i.price.toLocaleString('vi-VN')}đ</td><td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right">${i.total.toLocaleString('vi-VN')}đ</td></tr>`
+          ).join('')
+          const w = window.open('', '_blank')
+          if (w) {
+            w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Hoá đơn - Music Box</title>
+<style>
+  body{font-family:'Segoe UI',Arial,sans-serif;max-width:380px;margin:20px auto;padding:20px;color:#333;font-size:14px}
+  .header{text-align:center;border-bottom:2px dashed #ccc;padding-bottom:16px;margin-bottom:16px}
+  .header h1{font-size:22px;margin:0 0 4px;color:#ce7a58}
+  .header p{margin:4px 0;color:#888;font-size:12px}
+  .info-row{display:flex;justify-content:space-between;padding:4px 0;font-size:13px}
+  .info-row .label{color:#888}
+  .info-row .value{font-weight:600}
+  .section-title{font-weight:700;font-size:14px;margin:16px 0 8px;color:#ce7a58}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;padding:6px 8px;border-bottom:2px solid #ce7a58;font-size:12px;color:#888;text-transform:uppercase}
+  .total-section{border-top:2px dashed #ccc;margin-top:16px;padding-top:12px}
+  .total-row{display:flex;justify-content:space-between;padding:4px 0;font-size:14px}
+  .total-row.final{font-size:20px;font-weight:800;color:#ce7a58;padding:8px 0;border-top:2px solid #ce7a58;margin-top:8px}
+  .discount-row{color:#e94560}
+  .footer{text-align:center;margin-top:24px;padding-top:16px;border-top:2px dashed #ccc}
+  .footer .thanks{font-size:16px;font-weight:700;color:#ce7a58;margin-bottom:4px}
+  .footer .msg{font-size:12px;color:#888;line-height:1.6}
+  @media print{.no-print{display:none!important}body{margin:0;padding:10px}}
+</style></head><body>
+<div class="header">
+  <h1>🎵 Music Box</h1>
+  <p>HÓA ĐƠN THANH TOÁN</p>
+  <p>${dateFormat(checkOutTime)}</p>
+</div>
+<div class="info-row"><span class="label">Phòng</span><span class="value">Phòng ${sess.room_id}</span></div>
+<div class="info-row"><span class="label">Giờ vào</span><span class="value">${timeFormat(checkInTime)}</span></div>
+<div class="info-row"><span class="label">Giờ ra</span><span class="value">${timeFormat(checkOutTime)}</span></div>
+<div class="info-row"><span class="label">Thời gian hát</span><span class="value">${durationStr}</span></div>
+<div class="info-row"><span class="label">Đơn giá</span><span class="value">${(checkInTime.getHours() >= pricing.night_start_hour || checkInTime.getHours() < pricing.day_start_hour ? pricing.night_rate : pricing.day_rate).toLocaleString('vi-VN')}đ/h (${checkInTime.getHours() >= pricing.night_start_hour || checkInTime.getHours() < pricing.day_start_hour ? 'Ban đêm' : 'Ban ngày'})</span></div>
+<div class="section-title">🏠 Tiền phòng</div>
+<div class="info-row"><span class="label">Phòng ${sess.room_id} (${durationStr})</span><span class="value">${roomCost.toLocaleString('vi-VN')}đ</span></div>
+${foodItems.length > 0 ? `
+<div class="section-title">🍽️ Đồ ăn & uống</div>
+<table><thead><tr><th>Món</th><th style="text-align:center">SL</th><th style="text-align:right">Đơn giá</th><th style="text-align:right">T.Tiền</th></tr></thead><tbody>${foodRowsHtml}</tbody></table>
+` : ''}
+<div class="total-section">
+  <div class="total-row"><span>Tiền phòng</span><span>${roomCost.toLocaleString('vi-VN')}đ</span></div>
+  ${foodTotal > 0 ? `<div class="total-row"><span>Đồ ăn/uống</span><span>${foodTotal.toLocaleString('vi-VN')}đ</span></div>` : ''}
+  <div class="total-row" style="font-weight:600"><span>Tạm tính</span><span>${subtotal.toLocaleString('vi-VN')}đ</span></div>
+  ${discountPercent > 0 ? `<div class="total-row discount-row"><span>Giảm giá (${discountPercent}%)</span><span>-${discountAmount.toLocaleString('vi-VN')}đ</span></div>` : ''}
+  <div class="total-row final"><span>TỔNG THANH TOÁN</span><span>${finalTotal.toLocaleString('vi-VN')}đ</span></div>
+</div>
+<div class="footer">
+  <div class="thanks">Cảm ơn quý khách! 💖</div>
+  <div class="msg">Hẹn gặp lại quý khách tại Music Box!<br/>Chúc quý khách một ngày tốt lành 🎶</div>
+</div>
+<div class="no-print" style="text-align:center;margin-top:20px">
+  <button onclick="window.print()" style="padding:12px 40px;font-size:15px;cursor:pointer;background:#ce7a58;color:#fff;border:none;border-radius:8px;font-weight:600">🖨️ In hoá đơn</button>
+</div>
+</body></html>`)
+            w.document.close()
+          }
+        }
+
+        return (
+          <div className="modal-overlay" onClick={() => setShowInvoiceModal(false)}>
+            <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 500, maxHeight: '90vh', overflowY: 'auto' }}>
+              <h3 className="modal-title">🧾 Hoá đơn Phòng {sess.room_id}</h3>
+
+              {/* Room Info */}
+              <div style={{ background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm, 8px)', padding: 16, marginBottom: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 14 }}>
+                  <span style={{ color: 'var(--text-muted)' }}>⏰ Giờ vào</span>
+                  <span style={{ fontWeight: 600 }}>{timeFormat(checkInTime)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 14 }}>
+                  <span style={{ color: 'var(--text-muted)' }}>⏰ Giờ ra</span>
+                  <span style={{ fontWeight: 600 }}>{timeFormat(checkOutTime)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 14 }}>
+                  <span style={{ color: 'var(--text-muted)' }}>⏱️ Thời gian</span>
+                  <span style={{ fontWeight: 600 }}>{durationStr}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: '1px solid var(--border)', marginTop: 8, fontSize: 15, fontWeight: 700 }}>
+                  <span>🏠 Tiền phòng</span>
+                  <span style={{ color: 'var(--accent)' }}>{formatPrice(roomCost)}</span>
+                </div>
+              </div>
+
+              {/* Food Orders */}
+              {foodItems.length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>🍽️ Đồ ăn & uống</div>
+                  <div style={{ background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm, 8px)', padding: 12 }}>
+                    {foodItems.map((item, idx) => (
+                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
+                        <span>{item.name} × {item.qty}</span>
+                        <span style={{ fontWeight: 600 }}>{formatPrice(item.total)}</span>
+                      </div>
+                    ))}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: '1px solid var(--border)', marginTop: 8, fontSize: 14, fontWeight: 700 }}>
+                      <span>Tổng đồ ăn</span>
+                      <span style={{ color: 'var(--accent)' }}>{formatPrice(foodTotal)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Discount */}
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>🏷️ Mã giảm giá</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    className="form-input"
+                    type="number"
+                    min="0"
+                    max="100"
+                    placeholder="0"
+                    value={discountPercent || ''}
+                    onChange={e => setDiscountPercent(Math.min(100, Math.max(0, Number(e.target.value))))}
+                    style={{ width: 80, textAlign: 'center', fontSize: 16, fontWeight: 700 }}
+                  />
+                  <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-secondary)' }}>%</span>
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+                    {[5, 10, 15, 20].map(p => (
+                      <button
+                        key={p}
+                        className={`btn btn-sm ${discountPercent === p ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => setDiscountPercent(p)}
+                        style={{ fontSize: 12, padding: '4px 10px' }}
+                      >{p}%</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Summary */}
+              <div style={{ background: 'var(--bg-surface)', borderRadius: 'var(--radius-sm, 8px)', padding: 16, marginBottom: 20 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 14 }}>
+                  <span>Tiền phòng</span>
+                  <span>{formatPrice(roomCost)}</span>
+                </div>
+                {foodTotal > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 14 }}>
+                    <span>Đồ ăn/uống</span>
+                    <span>{formatPrice(foodTotal)}</span>
+                  </div>
+                )}
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 14, fontWeight: 600 }}>
+                  <span>Tạm tính</span>
+                  <span>{formatPrice(subtotal)}</span>
+                </div>
+                {discountPercent > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 14, color: '#e94560' }}>
+                    <span>Giảm giá ({discountPercent}%)</span>
+                    <span>-{formatPrice(discountAmount)}</span>
+                  </div>
+                )}
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0', borderTop: '2px solid var(--border)', marginTop: 8, fontSize: 20, fontWeight: 800 }}>
+                  <span>TỔNG</span>
+                  <span style={{ color: 'var(--accent)' }}>{formatPrice(finalTotal)}</span>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="btn btn-primary"
+                  style={{ flex: 1, padding: '12px 16px', fontSize: 15 }}
+                  onClick={() => { printInvoice(); setInvoicePrinted(prev => ({ ...prev, [sess.id]: true })); checkOutRoom(sess); setShowInvoiceModal(false) }}
+                >🖨️ In hoá đơn & Đóng phòng</button>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button
+                  className="btn btn-secondary"
+                  style={{ flex: 1 }}
+                  onClick={() => { setInvoicePrinted(prev => ({ ...prev, [sess.id]: false })); checkOutRoom(sess); setShowInvoiceModal(false) }}
+                >🔒 Đóng phòng (không in)</button>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setShowInvoiceModal(false)}
+                >Huỷ</button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* ===================== MODALS ===================== */}
       {showMenuModal && (
